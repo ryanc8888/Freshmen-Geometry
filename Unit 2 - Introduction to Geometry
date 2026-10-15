@@ -306,7 +306,7 @@ QS = [
 PAGE = r"""<!DOCTYPE html>
 <html lang="en" data-theme="light"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Geometry Study Lab</title>
+<title>Geometry Study Material Unit 2</title>
 <style>
 :root{--bg:#f4f6ff;--bg2:#e9edff;--card:#ffffff;--tx:#1b2140;--mu:#69708f;--bd:#dbe0f5;--ac:#5b6cff;--ok:#16a34a;--no:#e11d48;--sh:0 10px 30px rgba(60,70,150,.12)}
 :root[data-theme="dark"]{--bg:#0e1020;--bg2:#171a35;--card:#181b33;--tx:#eef0ff;--mu:#9ba2c8;--bd:#2a2f58;--ac:#8b97ff;--ok:#4ade80;--no:#fb7185;--sh:0 10px 30px rgba(0,0,0,.4)}
@@ -367,7 +367,7 @@ nav button.on{background:var(--ac);color:#fff;border-color:var(--ac)}
 .cf{position:fixed;left:50%;top:40%;width:10px;height:10px;border-radius:2px;background:var(--c);pointer-events:none;z-index:9;animation:fly 1.1s ease-out forwards}
 @keyframes fly{to{transform:translate(var(--dx),var(--dy)) rotate(var(--r));opacity:0}}
 </style></head><body>
-<header><h1>Geometry Study Lab</h1><button id="theme" aria-label="Switch theme"></button></header>
+<header><h1>Geometry Study Material Unit 2</h1><button id="theme" aria-label="Switch theme"></button></header>
 <main><nav id="nav"></nav><div id="view" class="view"></div></main>
 <script>
 const $=(s,e=document)=>e.querySelector(s);
@@ -519,7 +519,7 @@ def main():
     if server is None:
         raise SystemExit("No free port found")
     url = f"http://127.0.0.1:{server.server_address[1]}"
-    print(f"Geometry Study Lab running at {url}")
+    print(f"Geometry Study Material Unit 2 running at {url}")
     print("Press Ctrl+C to stop.")
     threading.Timer(0.6, lambda: webbrowser.open(url)).start()
     try:
