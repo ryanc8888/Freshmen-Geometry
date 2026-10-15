@@ -1,0 +1,532 @@
+import json
+import random
+import threading
+import webbrowser
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import parse_qs, urlparse
+
+SAVE = Path(__file__).with_name("geometry_progress.json")
+
+
+def expr(a, b):
+    s = "x" if a == 1 else f"{a}x"
+    if b > 0:
+        return f"{s} + {b}"
+    if b < 0:
+        return f"{s} − {-b}"
+    return s
+
+
+def mk(q, correct, extras, why, unit="°", level=0, hi=360):
+    pool = []
+    for e in extras:
+        if 0 < e <= hi and e != correct and e not in pool:
+            pool.append(e)
+    random.shuffle(pool)
+    pool = pool[:3]
+    steps = [1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 20]
+    random.shuffle(steps)
+    for s in steps:
+        for c in (correct + s, correct - s):
+            if len(pool) < 3 and 0 < c <= hi and c != correct and c not in pool:
+                pool.append(c)
+    vals = pool + [correct]
+    random.shuffle(vals)
+    return {"q": q, "options": [f"{v}{unit}" for v in vals], "answer": vals.index(correct), "why": why, "level": level}
+
+
+def pair180():
+    while True:
+        k, m = random.randint(1, 4), random.randint(1, 3)
+        x, b = random.randint(5, 30), random.randint(0, 20)
+        c = 180 - (k + m) * x - b
+        if -40 <= c <= 40 and k * x + b > 0 and m * x + c > 0 and (k, b) != (m, c):
+            return k, b, m, c, x
+
+
+def equal_pair(cap=170):
+    while True:
+        a, c = random.randint(1, 6), random.randint(1, 6)
+        x, b = random.randint(3, 15), random.randint(0, 15)
+        d = (a - c) * x + b
+        if a != c and 0 < a * x + b <= cap:
+            return a, b, c, d, x
+
+
+def g_comp():
+    A = random.randint(10, 80)
+    return mk(f"What is the complement of a {A}° angle?", 90 - A, [A, 180 - A, 90 + A], f"Complementary angles add to 90, so 90 − {A} = {90 - A}.", hi=180)
+
+
+def g_supp():
+    A = random.randint(20, 160)
+    return mk(f"What is the supplement of a {A}° angle?", 180 - A, [A, abs(90 - A), 360 - A], f"Supplementary angles add to 180, so 180 − {A} = {180 - A}.", hi=180)
+
+
+def g_vert():
+    A = random.randint(25, 155)
+    return mk(f"Two lines cross and one angle measures {A}°. What is the measure of its vertical angle?", A, [180 - A, 90, 360 - A], f"Vertical angles are congruent, so the answer is {A}°.", hi=180)
+
+
+def g_segadd():
+    a, b = random.randint(3, 20), random.randint(3, 20)
+    return mk(f"B is between A and C. AB = {a} and BC = {b}. What is AC?", a + b, [abs(a - b), a * b], f"Segment Addition Postulate: {a} + {b} = {a + b}.", unit="", hi=999)
+
+
+def g_linpair():
+    k, b, m, c, x = pair180()
+    return mk(f"∠1 and ∠2 form a linear pair. m∠1 = ({expr(k, b)})° and m∠2 = ({expr(m, c)})°. What is x?", x, [k * x + b, m * x + c, 180 // (k + m)],
+              f"A linear pair is supplementary, so {expr(k + m, b + c)} = 180. Solving gives x = {x}.", unit="", level=1, hi=999)
+
+
+def g_bisector():
+    h = random.randint(15, 85)
+    return mk(f"Ray BD bisects ∠ABC and m∠ABC = {2 * h}°. What is m∠ABD?", h, [2 * h, 90 - h, h + 10], f"A bisector splits the angle into two equal parts. {2 * h} ÷ 2 = {h}.", level=1, hi=180)
+
+
+def g_segexpr():
+    a, c, x = random.randint(1, 5), random.randint(1, 5), random.randint(2, 12)
+    b, d = random.randint(0, 9), random.randint(0, 9)
+    T = (a + c) * x + b + d
+    return mk(f"B is between A and C. AB = {expr(a, b)}, BC = {expr(c, d)}, and AC = {T}. What is x?", x, [x + 1, x - 1, T // (a + c)],
+              f"AB + BC = AC, so {expr(a + c, b + d)} = {T}. Solving gives x = {x}.", unit="", level=1, hi=999)
+
+
+def g_perp():
+    a, x = random.randint(2, 6), random.randint(4, 15)
+    b = 90 - a * x
+    return mk(f"Lines p and q are perpendicular. One angle they form measures ({expr(a, b)})°. What is x?", x, [x + 2, x - 2, 90 // a],
+              f"Perpendicular lines form right angles, so {expr(a, b)} = 90. Solving gives x = {x}.", unit="", level=1, hi=999)
+
+
+def g_midpoint():
+    while True:
+        a, c, x = random.randint(2, 7), random.randint(1, 6), random.randint(2, 12)
+        b = random.randint(1, 10)
+        if a != c:
+            break
+    d = (a - c) * x + b
+    half = a * x + b
+    return mk(f"M is the midpoint of XY. XM = {expr(a, b)} and MY = {expr(c, d)}. What is XY?", 2 * half, [half, x, 2 * half + 2 * x],
+              f"A midpoint makes XM = MY, so {expr(a, b)} = {expr(c, d)} and x = {x}. Then XM = {half} and XY = 2({half}) = {2 * half}.", unit="", level=2, hi=999)
+
+
+def g_suppk():
+    if random.random() < 0.5:
+        k = random.choice([2, 3, 4, 5, 8, 11])
+        ang, tot, word = 180 // (k + 1), 180, "supplement"
+    else:
+        k = random.choice([2, 4, 5, 8, 9, 14])
+        ang, tot, word = 90 // (k + 1), 90, "complement"
+    times = "twice" if k == 2 else f"{k} times"
+    return mk(f"The {word} of an angle is {times} the angle. What is the angle?", ang, [tot - ang, tot // k, 2 * ang],
+              f"x + {k}x = {tot}, so {k + 1}x = {tot} and x = {ang}.", level=2, hi=180)
+
+
+def g_altint():
+    a, b, c, d, x = equal_pair()
+    return mk(f"Two parallel lines are cut by a transversal. Alternate interior angles measure ({expr(a, b)})° and ({expr(c, d)})°. What is x?", x, [x + 2, x - 2, x + 5],
+              f"Alternate interior angles are congruent, so {expr(a, b)} = {expr(c, d)}. Solving gives x = {x}.", unit="", level=2, hi=999)
+
+
+def g_sameside():
+    k, b, m, c, x = pair180()
+    return mk(f"Two parallel lines are cut by a transversal. Same-side interior angles measure ({expr(k, b)})° and ({expr(m, c)})°. What is the measure of the first angle?", k * x + b,
+              [m * x + c, x, 180 - (k * x + b) + 10], f"Same-side interior angles are supplementary, so {expr(k + m, b + c)} = 180 and x = {x}. The first angle is {k * x + b}°.", level=2, hi=180)
+
+
+def g_vertexpr():
+    a, b, c, d, x = equal_pair()
+    return mk(f"Vertical angles measure ({expr(a, b)})° and ({expr(c, d)})°. What is the measure of the first angle?", a * x + b, [x, c * x + d + 10, 180 - (a * x + b)],
+              f"Vertical angles are congruent, so {expr(a, b)} = {expr(c, d)} and x = {x}. The angle is {a * x + b}°.", level=3, hi=180)
+
+
+def g_bisectexpr():
+    a, b, c, d, x = equal_pair(85)
+    h = a * x + b
+    return mk(f"Ray BD bisects ∠ABC. m∠ABD = ({expr(a, b)})° and m∠DBC = ({expr(c, d)})°. What is m∠ABC?", 2 * h, [h, x, 2 * h + 10],
+              f"A bisector makes the two angles equal, so {expr(a, b)} = {expr(c, d)} and x = {x}. Each part is {h}°, so ∠ABC = {2 * h}°.", level=3, hi=180)
+
+
+def g_angadd():
+    while True:
+        a, c, x = random.randint(1, 5), random.randint(1, 5), random.randint(3, 15)
+        b, d = random.randint(0, 15), random.randint(0, 15)
+        T = (a + c) * x + b + d
+        if T <= 175:
+            break
+    return mk(f"P is inside ∠ABC. m∠ABP = ({expr(a, b)})°, m∠PBC = ({expr(c, d)})°, and m∠ABC = {T}°. What is m∠PBC?", c * x + d, [a * x + b, x, T - 10],
+              f"Angle Addition Postulate: {expr(a + c, b + d)} = {T}, so x = {x}. Then m∠PBC = {c * x + d}°.", level=3, hi=180)
+
+
+RT = [
+    ("∠{a} and ∠{b} form a linear pair, so they are supplementary", "Linear Pair Theorem"),
+    ("∠{a} and ∠{b} are supplementary, so m∠{a} + m∠{b} = 180°", "Def. of supplementary angles"),
+    ("∠{a} and ∠{b} are complementary, so m∠{a} + m∠{b} = 90°", "Def. of complementary angles"),
+    ("∠{a} and ∠{b} are vertical angles, so ∠{a} ≅ ∠{b}", "Vertical Angles Theorem"),
+    ("m∠{a} = m∠{b}, so ∠{a} ≅ ∠{b}", "Def. of congruent angles"),
+    ("∠{a} and ∠{c} are both supplementary to ∠{b}, so ∠{a} ≅ ∠{c}", "Congruent Supplements Theorem"),
+    ("∠{a} and ∠{c} are both complementary to ∠{b}, so ∠{a} ≅ ∠{c}", "Congruent Complements Theorem"),
+    ("Ray BD bisects ∠ABC, so ∠ABD ≅ ∠DBC", "Def. of angle bisector"),
+    ("m∠{a} = 90°, so ∠{a} is a right angle", "Def. of right angle"),
+    ("Line m ⊥ line n, so the angles they form are right angles", "Def. of perpendicular lines"),
+    ("∠{a} and ∠{b} are right angles, so ∠{a} ≅ ∠{b}", "Right Angle Congruence Theorem"),
+    ("m∠{a} = m∠{b} and m∠{b} = m∠{c}, so m∠{a} = m∠{c}", "Transitive Property"),
+    ("m∠{a} + m∠{b} = 180 and m∠{b} = m∠{c}, so m∠{a} + m∠{c} = 180", "Substitution Property"),
+    ("m∠{a} + m∠{c} = m∠{b} + m∠{c}, so m∠{a} = m∠{b}", "Subtraction Property of Equality"),
+    ("Ray BD is inside ∠ABC, so m∠ABD + m∠DBC = m∠ABC", "Angle Addition Postulate"),
+]
+REASONS = sorted({r for _, r in RT})
+
+
+def g_reason():
+    t, r = random.choice(RT)
+    a, b, c = random.sample(range(1, 7), 3)
+    opts = random.sample([x for x in REASONS if x != r], 3) + [r]
+    random.shuffle(opts)
+    return {"q": "What is the reason for this step?  " + t.format(a=a, b=b, c=c), "options": opts, "answer": opts.index(r), "why": f"The reason is the {r}.", "level": 3}
+
+
+def g_quad():
+    if random.random() < 0.5:
+        r, s = random.choice([(1, 90), (2, 45), (3, 30), (5, 18), (6, 15), (9, 10)])
+        tot, word = 90, "complementary"
+    else:
+        r, s = random.choice([(1, 180), (2, 90), (3, 60), (4, 45), (5, 36), (6, 30), (9, 20), (10, 18), (12, 15)])
+        tot, word = 180, "supplementary"
+    p = s - r
+    return mk(f"Two {word} angles measure x² degrees and {p}x degrees. What is x? (Angle measures cannot be negative.)", r, [s, p, r + 1],
+              f"x² + {p}x = {tot}, so x² + {p}x − {tot} = 0. That factors to (x − {r})(x + {s}) = 0. x = {r} or x = −{s}. A measure can't be negative, so x = {r}.", unit="", level=4, hi=999)
+
+
+def g_system():
+    if random.random() < 0.5:
+        tot, word, d = 90, "complementary", random.choice(range(2, 42, 2))
+    else:
+        tot, word, d = 180, "supplementary", random.choice(range(10, 102, 2))
+    big = (tot + d) // 2
+    return mk(f"Two angles are {word}. The larger angle is {d}° more than the smaller. What is the larger angle?", big, [tot - big, d, big + 5],
+              f"Let the small angle be y. y + (y + {d}) = {tot}, so y = {(tot - d) // 2}. The larger angle is {big}°.", level=4, hi=180)
+
+
+def g_altitude():
+    h = random.randint(30, 70)
+    return mk(f"In triangle QRS, RP ⊥ QS at P and RP bisects ∠QRS. If m∠QRS = {2 * h}°, what is m∠S?", 90 - h, [h, 180 - 2 * h, 90 - 2 * h + 10],
+              f"RP bisects ∠QRS, so m∠PRS = {h}°. RP ⊥ QS, so m∠RPS = 90°. The angles of triangle RPS add to 180, so m∠S = 180 − 90 − {h} = {90 - h}°.", level=4, hi=180)
+
+
+GEN = {
+    0: [g_comp, g_supp, g_vert, g_segadd],
+    1: [g_linpair, g_bisector, g_segexpr, g_perp],
+    2: [g_midpoint, g_suppk, g_altint, g_sameside],
+    3: [g_vertexpr, g_bisectexpr, g_angadd, g_reason],
+    4: [g_quad, g_system, g_altitude],
+}
+
+
+def random_question(level):
+    level = max(0, min(4, level))
+    q = random.choice(GEN[level])()
+    q["level"] = level
+    return q
+
+
+CARDS = [
+    ["Collinear points", "Points that lie on the same line. The line does not have to be drawn.", "Points & Lines"],
+    ["Coplanar", "Points or lines that lie in the same plane.", "Points & Lines"],
+    ["Naming a plane", "A capital script letter (Plane M) or any 3 noncollinear points.", "Points & Lines"],
+    ["Two lines intersect in...", "A point.", "Points & Lines"],
+    ["Two planes intersect in...", "A line.", "Points & Lines"],
+    ["Ruler Postulate", "Every point on a line pairs with a real number. Distance is the absolute value of the difference of the coordinates.", "Segments"],
+    ["Segment Addition Postulate", "If B is between A and C, then AB + BC = AC.", "Segments"],
+    ["Midpoint", "The point that splits a segment into two congruent segments.", "Segments"],
+    ["Segment bisector", "A line, ray, or segment that goes through the midpoint of a segment.", "Segments"],
+    ["Interior of an angle", "The points between the two sides of the angle.", "Angles"],
+    ["Acute, right, obtuse, straight", "Acute: 0 to 90. Right: 90. Obtuse: 90 to 180. Straight: 180.", "Angles"],
+    ["Adjacent angles", "Same plane, a common vertex, a common side, and no common interior points.", "Angles"],
+    ["Vertical angles", "Nonadjacent angles formed by two intersecting lines. Always congruent.", "Angles"],
+    ["Linear pair", "Adjacent angles whose noncommon sides are opposite rays. They add to 180.", "Angles"],
+    ["Perpendicular bisector", "Goes through the midpoint of a segment and makes right angles with it.", "Angles"],
+    ["Median of a triangle", "A segment from a vertex to the midpoint of the opposite side.", "Angles"],
+    ["Altitude of a triangle", "A segment from a vertex that is perpendicular to the opposite side.", "Angles"],
+    ["Reflexive property", "a = a. Example: m∠2 = m∠2.", "Properties"],
+    ["Symmetric property", "If a = b, then b = a.", "Properties"],
+    ["Transitive property", "If a = b and b = c, then a = c.", "Properties"],
+    ["Substitution property", "If a = b, then b can replace a in any expression.", "Properties"],
+    ["Addition, Subtraction, Multiplication, Division", "Do the same thing to both sides of an equation. For division, the number cannot be 0.", "Properties"],
+    ["Distributive property", "a(b + c) = ab + ac", "Properties"],
+    ["Postulate", "A statement accepted as true without proof.", "Theorems"],
+    ["Theorem", "A statement that has been proved using definitions, postulates, and other theorems.", "Theorems"],
+    ["Corresponding angles", "Congruent when lines are parallel. If they are congruent, the lines are parallel (converse).", "Parallel & Perp"],
+    ["Alternate interior and exterior angles", "Congruent when lines are parallel. The converse also works.", "Parallel & Perp"],
+    ["Same-side interior and exterior angles", "Supplementary when lines are parallel. The converse also works.", "Parallel & Perp"],
+    ["Perpendicular Transversal Theorem", "In a plane, a transversal perpendicular to one of two parallel lines is perpendicular to the other.", "Parallel & Perp"],
+    ["Two lines perpendicular to the same line", "In a plane, they are parallel.", "Parallel & Perp"],
+    ["Shortest segment from a point to a line", "The perpendicular segment. Its length is the distance from the point to the line.", "Parallel & Perp"],
+]
+
+PAIRS = [
+    ["Def. of congruent angles", "Angles with the same measure"],
+    ["Angle Addition Postulate", "The two smaller angles add up to the whole angle"],
+    ["Def. of angle bisector", "Splits an angle into two congruent angles"],
+    ["Def. of complementary angles", "Two angles whose measures add to 90"],
+    ["Def. of supplementary angles", "Two angles whose measures add to 180"],
+    ["Vertical Angles Theorem", "Angles across from each other at a crossing are congruent"],
+    ["Def. of perpendicular lines", "Lines that meet to form right angles"],
+    ["Def. of right angle", "An angle that measures exactly 90 degrees"],
+    ["Linear Pair Theorem", "If two angles form a linear pair, they are supplementary"],
+    ["Right Angle Congruence Theorem", "All right angles are congruent"],
+    ["Congruent Supplements Theorem", "Angles supplementary to the same angle are congruent"],
+    ["Congruent Complements Theorem", "Angles complementary to the same angle are congruent"],
+]
+
+QS = [
+    ["Segments", "Q is the midpoint of PR. PQ = 6x − 7 and QR = 5x + 1. What is PR?", ["41", "82", "8", "58"], 1, "6x − 7 = 5x + 1 gives x = 8. PQ = 41, so PR = 82."],
+    ["Segments", "EG = 59, EF = 8x − 14, FG = 4x + 1 with F between E and G. What is EF?", ["25", "34", "6", "59"], 1, "12x − 13 = 59 gives x = 6. EF = 8(6) − 14 = 34."],
+    ["Segments", "B is the midpoint of AC and D is the midpoint of BC. Which is true?", ["AC = ½BC", "AC = 4DC", "BD = ½AD", "AC = 3BD"], 1, "AC = 2BC and BC = 2DC, so AC = 4DC."],
+    ["Angles", "BD bisects ∠ABC and m∠ABC = 98°. If m∠ABD = 5x − 11, what is x?", ["10", "12", "9.8", "49"], 1, "5x − 11 = 49, so x = 12."],
+    ["Angles", "A linear pair is (2x + 30)° and x°. What is x?", ["30", "50", "60", "150"], 1, "3x + 30 = 180, so x = 50."],
+    ["Angles", "What is the complement of a 75° angle?", ["15°", "105°", "285°", "75°"], 0, "90 − 75 = 15."],
+    ["Angles", "The supplement of an angle is twice the angle. What is the angle?", ["30°", "45°", "60°", "90°"], 2, "x + 2x = 180, so x = 60."],
+    ["Angles", "If all you know is ADG, what can you conclude?", ["A, D, G are collinear and m∠ADG = 180°", "∠ADG is 90°", "D is a midpoint", "Nothing"], 0, "A bar over ADG means the three points lie on one line."],
+    ["Angles", "RP ⊥ QS and RP bisects ∠SRQ = 104°. What is m∠S?", ["38°", "52°", "76°", "90°"], 0, "m∠PRS = 52, m∠RPS = 90, so S = 180 − 142 = 38."],
+    ["Angles", "BD is a median of triangle ABC. Which can you NOT conclude?", ["AD = DC", "D is the midpoint of AC", "m∠ABD = m∠CBD", "AD + DC = AC"], 2, "A median does not have to bisect the angle."],
+    ["Properties", "2x + 9 = 19 becomes 2x = 10. Which property?", ["Addition", "Subtraction", "Division", "Substitution"], 1, "9 was subtracted from both sides."],
+    ["Properties", "∠O ≅ ∠W and ∠W ≅ ∠L, so ∠O ≅ ∠L. Which property?", ["Reflexive", "Symmetric", "Transitive", "Distributive"], 2, "It is a chain: O to W to L."],
+    ["Theorems", "∠A and ∠B are both complementary to ∠C. Then ∠A and ∠B are...", ["Supplementary", "Congruent", "Vertical", "Adjacent"], 1, "Congruent Complements Theorem."],
+    ["Theorems", "Reason for: ∠1 and ∠2 form a linear pair, so they are supplementary.", ["Def. of supplementary", "Linear Pair Theorem", "Substitution", "Reflexive"], 1, "That is the Linear Pair Theorem."],
+    ["Theorems", "Which angles are always congruent?", ["Adjacent angles", "Linear pair angles", "Vertical angles", "Complementary angles"], 2, "Vertical Angles Theorem."],
+    ["Parallel & Perp", "Parallel lines cut by a transversal. Same-side interior angles are x and 110°. What is x?", ["110", "70", "180", "20"], 1, "They are supplementary: x + 110 = 180."],
+    ["Parallel & Perp", "A transversal is perpendicular to one of two parallel lines. It is also...", ["Parallel to the other", "Perpendicular to the other", "A bisector", "Neither"], 1, "Perpendicular Transversal Theorem."],
+    ["Parallel & Perp", "Alternate interior angles are congruent. What can you conclude?", ["The lines are parallel", "The lines are perpendicular", "The angles are right angles", "Nothing"], 0, "Converse of the Alternate Interior Angles Theorem."],
+    ["Parallel & Perp", "The shortest segment from a point to a line is...", ["Any segment", "The perpendicular one", "The parallel one", "The median"], 1, "The perpendicular segment is the shortest."],
+]
+
+PAGE = r"""<!DOCTYPE html>
+<html lang="en" data-theme="light"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Geometry Study Lab</title>
+<style>
+:root{--bg:#f4f6ff;--bg2:#e9edff;--card:#ffffff;--tx:#1b2140;--mu:#69708f;--bd:#dbe0f5;--ac:#5b6cff;--ok:#16a34a;--no:#e11d48;--sh:0 10px 30px rgba(60,70,150,.12)}
+:root[data-theme="dark"]{--bg:#0e1020;--bg2:#171a35;--card:#181b33;--tx:#eef0ff;--mu:#9ba2c8;--bd:#2a2f58;--ac:#8b97ff;--ok:#4ade80;--no:#fb7185;--sh:0 10px 30px rgba(0,0,0,.4)}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;color:var(--tx);font:16px/1.5 system-ui,-apple-system,Segoe UI,sans-serif;background:radial-gradient(900px 500px at 10% -10%,var(--bg2),transparent),radial-gradient(800px 500px at 100% 0%,color-mix(in srgb,var(--ac) 18%,transparent),transparent),var(--bg);background-attachment:fixed;transition:background .4s,color .4s}
+header{display:flex;align-items:center;justify-content:space-between;max-width:820px;margin:0 auto;padding:18px 16px 6px}
+h1{margin:0;font-size:1.5rem;background:linear-gradient(90deg,#5b6cff,#ec4899,#f97316);-webkit-background-clip:text;background-clip:text;color:transparent}
+#theme{width:46px;height:46px;border-radius:50%;border:1px solid var(--bd);background:var(--card);font-size:1.3rem;cursor:pointer;box-shadow:var(--sh);transition:transform .35s}
+#theme:hover{transform:rotate(25deg) scale(1.08)}
+main{max-width:820px;margin:0 auto;padding:6px 16px 60px}
+nav{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0 18px}
+nav button,.btn,.chip{border:1px solid var(--bd);background:var(--card);color:var(--tx);padding:9px 15px;border-radius:12px;font:inherit;cursor:pointer;transition:transform .15s,box-shadow .2s,background .25s,border-color .25s}
+nav button:hover,.btn:hover,.chip:hover{transform:translateY(-2px);box-shadow:var(--sh)}
+nav button.on{background:var(--ac);color:#fff;border-color:var(--ac)}
+.chip{padding:5px 12px;font-size:.85rem;border-color:var(--c,var(--bd))}
+.chip.on{background:var(--c,var(--ac));color:#fff}
+.btn.pri{background:var(--ac);color:#fff;border-color:var(--ac)}
+.btn.ok{background:var(--ok);color:#fff;border-color:var(--ok)}
+.btn.no{background:var(--no);color:#fff;border-color:var(--no)}
+.row{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}
+.view{opacity:0;transform:translateY(12px);transition:opacity .35s,transform .35s}
+.view.in{opacity:1;transform:none}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:18px;padding:20px;box-shadow:var(--sh);margin-bottom:14px}
+.mu{color:var(--mu)}
+.scene{perspective:1100px;margin:10px 0}
+.c3d{position:relative;min-height:230px;transform-style:preserve-3d;transition:transform .7s cubic-bezier(.2,.8,.2,1);cursor:pointer;animation:pop .45s ease}
+.c3d.flip{transform:rotateY(180deg)}
+.face{position:absolute;inset:0;backface-visibility:hidden;-webkit-backface-visibility:hidden;border-radius:20px;padding:22px;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;background:var(--card);border:2px solid var(--c);box-shadow:0 12px 34px color-mix(in srgb,var(--c) 30%,transparent)}
+.face.back{transform:rotateY(180deg);background:linear-gradient(160deg,color-mix(in srgb,var(--c) 22%,var(--card)),var(--card))}
+.tag{font-size:.72rem;letter-spacing:.08em;text-transform:uppercase;color:var(--c);font-weight:700}
+.big{font-size:1.35rem;font-weight:700;margin:8px 0}
+@keyframes pop{from{opacity:0;transform:scale(.94) translateY(10px)}to{opacity:1;transform:none}}
+.opt{display:block;width:100%;text-align:left;margin:8px 0;padding:12px 14px;border-radius:12px;border:1px solid var(--bd);background:var(--card);color:var(--tx);font:inherit;cursor:pointer;transition:transform .15s,background .25s,border-color .25s}
+.opt:hover:not(:disabled){transform:translateX(4px);border-color:var(--ac)}
+.opt.right{background:color-mix(in srgb,var(--ok) 22%,var(--card));border-color:var(--ok)}
+.opt.wrong{background:color-mix(in srgb,var(--no) 22%,var(--card));border-color:var(--no);animation:shake .35s}
+@keyframes shake{25%{transform:translateX(-6px)}75%{transform:translateX(6px)}}
+.why{margin-top:10px;padding:10px 12px;border-radius:12px;background:color-mix(in srgb,var(--ac) 12%,transparent);animation:pop .3s}
+.bar{height:12px;background:var(--bd);border-radius:8px;overflow:hidden;margin:6px 0 14px}
+.bar i{display:block;height:100%;width:0;background:linear-gradient(90deg,#5b6cff,#ec4899);border-radius:8px;transition:width .8s cubic-bezier(.2,.8,.2,1)}
+.sl{width:100%;-webkit-appearance:none;appearance:none;height:14px;border-radius:10px;outline:none;background:linear-gradient(90deg,var(--lc) var(--p),var(--bd) var(--p));cursor:pointer}
+.sl::-webkit-slider-thumb{-webkit-appearance:none;width:30px;height:30px;border-radius:50%;background:var(--card);border:4px solid var(--lc);box-shadow:var(--sh);transition:transform .15s}
+.sl::-webkit-slider-thumb:hover{transform:scale(1.15)}
+.sl::-moz-range-thumb{width:22px;height:22px;border-radius:50%;background:var(--card);border:4px solid var(--lc)}
+.lv{display:flex;justify-content:space-between;font-size:.8rem;color:var(--mu);margin-top:6px}
+.lvn{font-size:1.6rem;font-weight:800;color:var(--lc);transition:color .3s}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
+.tile{min-height:78px;padding:10px;border-radius:14px;border:2px solid var(--bd);background:var(--card);color:var(--tx);font:inherit;font-size:.88rem;cursor:pointer;transition:transform .2s,background .3s,border-color .3s,opacity .5s}
+.tile.t{border-bottom:5px solid #a855f7}
+.tile.d{border-bottom:5px solid #14b8a6}
+.tile:hover:not(.done){transform:translateY(-3px)}
+.tile.sel{border-color:var(--ac);transform:scale(1.06);background:color-mix(in srgb,var(--ac) 18%,var(--card))}
+.tile.bad{border-color:var(--no);animation:shake .4s}
+.tile.done{border-color:var(--ok);background:color-mix(in srgb,var(--ok) 20%,var(--card));opacity:.55;transform:scale(.95);cursor:default}
+.stats{display:flex;gap:10px;flex-wrap:wrap}
+.stat{flex:1;min-width:90px;text-align:center;padding:10px;border-radius:14px;background:color-mix(in srgb,var(--ac) 10%,var(--card));border:1px solid var(--bd)}
+.stat b{display:block;font-size:1.4rem}
+.cf{position:fixed;left:50%;top:40%;width:10px;height:10px;border-radius:2px;background:var(--c);pointer-events:none;z-index:9;animation:fly 1.1s ease-out forwards}
+@keyframes fly{to{transform:translate(var(--dx),var(--dy)) rotate(var(--r));opacity:0}}
+</style></head><body>
+<header><h1>Geometry Study Lab</h1><button id="theme" aria-label="Switch theme"></button></header>
+<main><nav id="nav"></nav><div id="view" class="view"></div></main>
+<script>
+const $=(s,e=document)=>e.querySelector(s);
+const el=(t,c,h)=>{const n=document.createElement(t);if(c)n.className=c;if(h!=null)n.innerHTML=h;return n};
+const COL={"Points & Lines":"#14b8a6","Segments":"#22c55e","Angles":"#3b82f6","Properties":"#f97316","Theorems":"#a855f7","Parallel & Perp":"#ec4899","Reasons":"#eab308"};
+const LV=["Easiest","Easy","Medium","Hard","Impossible"],LC=["#22c55e","#84cc16","#eab308","#f97316","#ef4444"];
+const TABS=[["cards","Flashcards"],["quiz","Practice"],["rand","Random"],["match","Match"],["prog","Progress"]];
+let D,S={theme:null,cards:{},qs:{},rand:{n:0,ok:0,streak:0,best:0,lv:{}},match:{best:0,rounds:0}},tab="cards",saveT,tick;
+const save=()=>{clearTimeout(saveT);saveT=setTimeout(()=>fetch("/api/state",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(S)}),250)};
+const shuffle=a=>{for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]]}return a};
+const burst=()=>{for(let i=0;i<30;i++){const p=el("i","cf");const a=Math.random()*6.28,d=120+Math.random()*180;p.style.setProperty("--dx",Math.cos(a)*d+"px");p.style.setProperty("--dy",Math.sin(a)*d-60+"px");p.style.setProperty("--r",Math.random()*720+"deg");p.style.setProperty("--c",Object.values(COL)[i%7]);document.body.appendChild(p);setTimeout(()=>p.remove(),1200)}};
+function applyTheme(t){document.documentElement.dataset.theme=t;$("#theme").textContent=t=="dark"?"☀️":"🌙";S.theme=t}
+$("#theme").onclick=()=>{applyTheme(S.theme=="dark"?"light":"dark");save()};
+function go(t){tab=t;clearInterval(tick);$("#nav").innerHTML="";TABS.forEach(([k,n])=>{const b=el("button",k==t?"on":"",n);b.onclick=()=>go(k);$("#nav").appendChild(b)});const v=$("#view");v.classList.remove("in");v.innerHTML="";({cards:viewCards,quiz:viewQuiz,rand:viewRand,match:viewMatch,prog:viewProg})[t]();requestAnimationFrame(()=>requestAnimationFrame(()=>v.classList.add("in")))}
+let cf={cat:"All",only:false,order:null,i:0};
+function deck(){const ids=D.cards.map((c,i)=>i);if(!cf.order)cf.order=ids;return cf.order.filter(i=>(cf.cat=="All"||D.cards[i][2]==cf.cat)&&(!cf.only||S.cards[D.cards[i][0]]!=="k"))}
+function viewCards(){const v=$("#view");v.innerHTML="";const chips=el("div","row");
+["All",...Object.keys(COL)].forEach(c=>{const b=el("button","chip"+(cf.cat==c?" on":""),c);b.style.setProperty("--c",COL[c]||"#5b6cff");b.onclick=()=>{cf.cat=c;cf.i=0;viewCards()};chips.appendChild(b)});v.appendChild(chips);
+const lab=el("label","mu");lab.innerHTML=`<input type="checkbox" ${cf.only?"checked":""}> Hide cards I know`;lab.firstChild.onchange=e=>{cf.only=e.target.checked;cf.i=0;viewCards()};v.appendChild(lab);
+const d=deck();if(!d.length){v.appendChild(el("div","card","Nothing here. Every card in this group is marked known."));return}
+cf.i=((cf.i%d.length)+d.length)%d.length;const c=D.cards[d[cf.i]],st=S.cards[c[0]];
+const sc=el("div","scene");sc.style.setProperty("--c",COL[c[2]]);const k=el("div","c3d");
+k.innerHTML=`<div class="face"><div class="tag">${c[2]}</div><div class="big">${c[0]}</div><div class="mu">Tap to flip</div></div><div class="face back"><div class="tag">${c[2]}</div><div style="font-size:1.1rem">${c[1]}</div></div>`;
+k.onclick=()=>k.classList.toggle("flip");sc.appendChild(k);v.appendChild(sc);
+v.appendChild(el("div","mu",`Card ${cf.i+1} of ${d.length}${st=="k"?" · known ✓":st=="r"?" · needs review":""}`));
+const r=el("div","row");
+const add=(t,cl,f)=>{const b=el("button","btn "+cl,t);b.onclick=f;r.appendChild(b)};
+add("← Previous","",()=>{cf.i--;viewCards()});
+add("Flip","",()=>k.classList.toggle("flip"));
+add("Study again","no",()=>{S.cards[c[0]]="r";save();cf.i++;viewCards()});
+add("Got it","ok",()=>{S.cards[c[0]]="k";save();if(!cf.only)cf.i++;viewCards()});
+add("Next →","",()=>{cf.i++;viewCards()});
+add("Shuffle","pri",()=>{cf.order=shuffle(D.cards.map((x,i)=>i));cf.i=0;viewCards()});
+v.appendChild(r)}
+document.addEventListener("keydown",e=>{if(tab!=="cards"||!D)return;const k=$(".c3d");if(e.key=="ArrowRight"){cf.i++;viewCards()}else if(e.key=="ArrowLeft"){cf.i--;viewCards()}else if(e.key==" "&&k){e.preventDefault();k.classList.toggle("flip")}});
+let qf={topic:"All",p:0};
+function viewQuiz(){const v=$("#view");v.innerHTML="";const tops=["All",...new Set(D.qs.map(q=>q[0]))];
+const chips=el("div","row");tops.forEach(t=>{const b=el("button","chip"+(qf.topic==t?" on":""),t);b.style.setProperty("--c",COL[t]||"#5b6cff");b.onclick=()=>{qf.topic=t;qf.p=0;viewQuiz()};chips.appendChild(b)});v.appendChild(chips);
+const ids=D.qs.map((q,i)=>i).filter(i=>qf.topic=="All"||D.qs[i][0]==qf.topic);qf.p=((qf.p%ids.length)+ids.length)%ids.length;
+const i=ids[qf.p],q=D.qs[i],done=Object.keys(S.qs).length,ok=Object.entries(S.qs).filter(([a,b])=>D.qs[a][3]==b).length;
+v.appendChild(el("div","mu",`Question ${qf.p+1} of ${ids.length} · ${ok} correct of ${done} answered`));
+const card=el("div","card");card.appendChild(el("div","big",q[1]));const box=el("div");const why=el("div");
+const paint=()=>{box.innerHTML="";q[2].forEach((o,j)=>{const a=S.qs[i],b=el("button","opt"+(a!=null?(j==q[3]?" right":j==a?" wrong":""):""),o);b.disabled=a!=null;b.onclick=()=>{S.qs[i]=j;save();paint()};box.appendChild(b)});why.innerHTML=S.qs[i]!=null?`<div class="why">${S.qs[i]==q[3]?"Correct. ":"Not quite. "}${q[4]}</div>`:""};
+paint();card.append(box,why);v.appendChild(card);
+const r=el("div","row");const bk=el("button","btn","← Back");bk.onclick=()=>{qf.p--;viewQuiz()};const nx=el("button","btn pri","Next →");nx.onclick=()=>{qf.p++;viewQuiz()};
+const rs=el("button","btn","Reset practice");rs.onclick=()=>{S.qs={};save();viewQuiz()};r.append(bk,nx,rs);v.appendChild(r)}
+let rv=0;
+function viewRand(){const v=$("#view");v.innerHTML="";const c=el("div","card");
+c.innerHTML=`<div class="mu">Difficulty</div><div class="lvn" id="ln"></div><input class="sl" id="sl" type="range" min="0" max="4" step="0.01" value="${rv}"><div class="lv">${LV.map(x=>`<span>${x}</span>`).join("")}</div>`;
+v.appendChild(c);const sl=$("#sl",c),ln=$("#ln",c);
+const paint=()=>{const x=+sl.value;sl.style.setProperty("--p",x/4*100+"%");const L=Math.round(x);sl.style.setProperty("--lc",LC[L]);ln.textContent=LV[L]};
+paint();sl.oninput=paint;
+sl.onchange=()=>{const f=+sl.value,t=Math.round(f),t0=performance.now();const run=n=>{const k=Math.min(1,(n-t0)/220);sl.value=f+(t-f)*(1-Math.pow(1-k,3));paint();if(k<1)requestAnimationFrame(run);else{rv=t;nextQ()}};requestAnimationFrame(run)};
+const st=el("div","stats");st.id="st";v.appendChild(st);const qb=el("div");qb.id="qb";v.appendChild(qb);rv=Math.round(rv);nextQ()}
+function stats(){const s=S.rand,l=S.rand.lv[rv]||{n:0,ok:0};$("#st").innerHTML=`<div class="stat"><b>${s.streak}</b>streak</div><div class="stat"><b>${s.best}</b>best streak</div><div class="stat"><b>${s.n?Math.round(100*s.ok/s.n):0}%</b>overall</div><div class="stat"><b>${l.n?Math.round(100*l.ok/l.n):0}%</b>${LV[rv]}</div>`}
+async function nextQ(){stats();const box=$("#qb");box.innerHTML='<div class="card mu">Making a new question...</div>';const lvl=rv;
+const q=await fetch("/api/random?level="+lvl+"&t="+Date.now()).then(r=>r.json());if(tab!=="rand")return;
+const card=el("div","card");card.style.animation="pop .4s";card.appendChild(el("div","big",q.q));const ob=el("div"),wy=el("div");let done=false;
+q.options.forEach((o,j)=>{const b=el("button","opt",o);b.onclick=()=>{if(done)return;done=true;const L=S.rand.lv[lvl]||{n:0,ok:0};L.n++;S.rand.n++;
+if(j==q.answer){S.rand.ok++;L.ok++;S.rand.streak++;S.rand.best=Math.max(S.rand.best,S.rand.streak);b.classList.add("right");if(S.rand.streak%5==0)burst()}else{S.rand.streak=0;b.classList.add("wrong");ob.children[q.answer].classList.add("right")}
+S.rand.lv[lvl]=L;save();stats();[...ob.children].forEach(x=>x.disabled=true);wy.innerHTML=`<div class="why">${j==q.answer?"Correct! ":"Not quite. "}${q.why}</div>`;const n=el("button","btn pri","New question");n.style.marginTop="12px";n.onclick=nextQ;wy.appendChild(n)};ob.appendChild(b)});
+card.append(ob,wy);box.innerHTML="";box.appendChild(card)}
+function viewMatch(){const v=$("#view");v.innerHTML="";const ps=shuffle(D.pairs.slice()).slice(0,8);
+const tiles=shuffle(ps.flatMap((p,k)=>[{k,kind:"t",x:p[0]},{k,kind:"d",x:p[1]}]));
+let sel=null,got=0,moves=0,t0=0;
+const top=el("div","stats");top.innerHTML=`<div class="stat"><b id="tm">0.0s</b>time</div><div class="stat"><b id="mv">0</b>moves</div><div class="stat"><b>${S.match.best?S.match.best.toFixed(1)+"s":"--"}</b>best time</div>`;
+const msg=el("div","mu","Match each reason or theorem (purple) with its meaning (teal).");msg.style.margin="12px 0";
+const g=el("div","grid");
+tiles.forEach(t=>{const b=el("button","tile "+t.kind,t.x);t.b=b;b.onclick=()=>{
+if(t.done||t===sel)return;if(!t0){t0=Date.now();tick=setInterval(()=>{$("#tm").textContent=((Date.now()-t0)/1000).toFixed(1)+"s"},100)}
+if(!sel){sel=t;b.classList.add("sel");return}
+if(sel.kind==t.kind){sel.b.classList.remove("sel");sel=t;b.classList.add("sel");return}
+moves++;$("#mv").textContent=moves;
+if(sel.k==t.k){[sel,t].forEach(z=>{z.done=true;z.b.classList.remove("sel");z.b.classList.add("done")});sel=null;got++;
+if(got==8){clearInterval(tick);const s=(Date.now()-t0)/1000;S.match.rounds++;const nb=!S.match.best||s<S.match.best;if(nb)S.match.best=s;save();burst();msg.innerHTML=`Done in <b>${s.toFixed(1)}s</b> with ${moves} moves.${nb?" New best time!":""}`}}
+else{const a=sel;sel=null;a.b.classList.remove("sel");[a,t].forEach(z=>z.b.classList.add("bad"));setTimeout(()=>[a,t].forEach(z=>z.b.classList.remove("bad")),450)}};g.appendChild(b)});
+const r=el("div","row");const nb=el("button","btn pri","New round");nb.onclick=()=>{clearInterval(tick);viewMatch()};r.appendChild(nb);
+v.append(top,msg,g,r)}
+function viewProg(){const v=$("#view");v.innerHTML="";const known=Object.values(S.cards).filter(x=>x=="k").length,qa=Object.keys(S.qs).length,qc=Object.entries(S.qs).filter(([a,b])=>D.qs[a][3]==b).length;
+const bar=(t,n,m,x)=>`<div class="card"><b>${t}</b><div class="bar"><i data-w="${m?100*n/m:0}"></i></div>${x||n+" of "+m}</div>`;
+v.innerHTML=bar("Flashcards known",known,D.cards.length)+bar("Practice questions answered",qa,D.qs.length)+bar("Practice questions correct",qc,D.qs.length)+
+bar("Random question accuracy",S.rand.ok,S.rand.n,`${S.rand.ok} of ${S.rand.n} correct · best streak ${S.rand.best}`)+
+`<div class="card"><b>Match game</b><div class="mu">${S.match.rounds} rounds finished · best time ${S.match.best?S.match.best.toFixed(1)+"s":"none yet"}</div></div>`;
+const r=el("div","row");const b=el("button","btn no","Reset everything");b.onclick=()=>{if(confirm("Erase all saved progress?")){const t=S.theme;S={theme:t,cards:{},qs:{},rand:{n:0,ok:0,streak:0,best:0,lv:{}},match:{best:0,rounds:0}};save();viewProg()}};r.appendChild(b);v.appendChild(r);
+setTimeout(()=>v.querySelectorAll(".bar i").forEach(i=>i.style.width=i.dataset.w+"%"),60)}
+async function boot(){const[d,s]=await Promise.all([fetch("/api/data").then(r=>r.json()),fetch("/api/state").then(r=>r.json())]);
+D=d;D.cards=D.cards.concat(D.pairs.map(p=>[p[0],p[1],"Reasons"]));
+S=Object.assign(S,s);S.rand=Object.assign({n:0,ok:0,streak:0,best:0,lv:{}},S.rand);S.match=Object.assign({best:0,rounds:0},S.match);
+applyTheme(S.theme||(matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light"));go("cards")}
+boot();
+</script></body></html>"""
+
+
+class Handler(BaseHTTPRequestHandler):
+    def reply(self, body, kind="application/json", code=200):
+        data = body.encode("utf-8") if isinstance(body, str) else body
+        self.send_response(code)
+        self.send_header("Content-Type", kind + "; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_GET(self):
+        url = urlparse(self.path)
+        if url.path == "/":
+            self.reply(PAGE, "text/html")
+        elif url.path == "/api/data":
+            self.reply(json.dumps({"cards": CARDS, "qs": QS, "pairs": PAIRS}))
+        elif url.path == "/api/state":
+            try:
+                self.reply(SAVE.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                self.reply("{}")
+        elif url.path == "/api/random":
+            try:
+                level = int(parse_qs(url.query).get("level", ["0"])[0])
+            except ValueError:
+                level = 0
+            self.reply(json.dumps(random_question(level)))
+        else:
+            self.reply("Not found", "text/plain", 404)
+
+    def do_POST(self):
+        if self.path != "/api/state":
+            self.reply("Not found", "text/plain", 404)
+            return
+        size = int(self.headers.get("Content-Length", 0))
+        raw = self.rfile.read(size)
+        try:
+            json.loads(raw)
+            SAVE.write_bytes(raw)
+            self.reply('{"ok":true}')
+        except ValueError:
+            self.reply('{"ok":false}', code=400)
+
+    def log_message(self, *args):
+        pass
+
+
+def main():
+    server = None
+    for port in range(8000, 8020):
+        try:
+            server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+            break
+        except OSError:
+            continue
+    if server is None:
+        raise SystemExit("No free port found")
+    url = f"http://127.0.0.1:{server.server_address[1]}"
+    print(f"Geometry Study Lab running at {url}")
+    print("Press Ctrl+C to stop.")
+    threading.Timer(0.6, lambda: webbrowser.open(url)).start()
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        server.shutdown()
+
+
+if __name__ == "__main__":
+    main()
